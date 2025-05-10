@@ -4,9 +4,7 @@ import socket
 import time
 from abc import ABC, abstractmethod
 
-from ss.audit.event import AuditEvent
 from ss.di import container
-
 
 transport_logger = logging.getLogger("audit.transport_logger")
 

@@ -44,8 +44,9 @@ def inject(func=None):
         @wraps(inner_func)
         def sync_wrapper(*args, **kwargs):
             sig = inspect.signature(inner_func)
+            bounds = sig.bind_partial(*args, **kwargs)
             for name, param in sig.parameters.items():
-                if name in kwargs:
+                if name in bounds.arguments:
                     continue
                 kwargs[name] = container.resolve(param)
             return inner_func(*args, **kwargs)
@@ -53,8 +54,9 @@ def inject(func=None):
         @wraps(inner_func)
         async def async_wrapper(*args, **kwargs):
             sig = inspect.signature(inner_func)
+            bounds = sig.bind_partial(*args, **kwargs)
             for name, param in sig.parameters.items():
-                if name in kwargs:
+                if name in bounds.arguments:
                     continue
                 kwargs[name] = container.resolve(param)
             return await inner_func(*args, **kwargs)

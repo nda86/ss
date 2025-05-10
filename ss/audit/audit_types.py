@@ -1,7 +1,7 @@
 import enum
 from typing import Annotated, Union
 
-from pydantic import Field, BaseModel
+from pydantic import Field, BaseModel, IPvAnyAddress
 
 NotEmptyStr = Annotated[str, Field(min_length=1)]
 NotEmptyMessageStr = Annotated[str, Field(min_length=1, max_length=20480)]
@@ -71,3 +71,11 @@ class SCMCategory(str, enum.Enum):
     ACCOUNT_MANAGEMENT_OPERATIONS = "ACCOUNT_MANAGEMENT_OPERATIONS"
     PRIVILEGES_MANAGEMENT_OPERATIONS = "PRIVILEGES_MANAGEMENT_OPERATIONS"
     SYSTEM_ERRORS = "SYSTEM_ERRORS"
+
+
+class AuditContext(BaseModel):
+    uuid_event: str
+    initiator: Initiator
+    ip_address: IPvAnyAddress
+    context: Context
+    deployment_context: DeploymentContext

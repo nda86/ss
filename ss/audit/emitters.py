@@ -1,9 +1,12 @@
 import itertools
 import json
 import os
-from typing import Iterable, Generator, TypeVar
-from ss.audit.event_types import EventTypeRegistry
+from typing import Iterable, Generator, TypeVar, Type
+
+from ss.audit.audit_types import AuditEventClass, AuditContext
+from ss.audit.event_types import EventTypeRegistry, BaseEventType
 from ss.audit.transport import BaseAuditTransport
+from ss.audit.utils import make_audit_event
 from ss.di import inject
 
 T = TypeVar("T")
@@ -55,3 +58,37 @@ async def emit_audit_catalog_async(transport: BaseAuditTransport):
             indent=4,
         )
         await transport.send_async(audit_message, host=audit_catalog_fluent_host, port=audit_catalog_fluent_port)
+
+
+@inject
+async def emit_audit_event_async(
+    event_class: AuditEventClass,
+    event_type_class: Type[BaseEventType],
+    audit_context: AuditContext,
+    transport: BaseAuditTransport,
+    error=None,
+):
+
+    audit_fluent_host = os.getenv("AUDIT_FLUENT_HOST", "localhost")
+    audit_fluent_port = int(os.getenv("AUDIT_FLUENT_PORT", 5170))
+
+    audit_message = make_audit_event(event_class, event_type_class, audit_context, error)
+
+    await transport.send_async(audit_message, host=audit_fluent_host, port=audit_fluent_port)
+
+
+@inject
+def emit_audit_event_sync(
+    event_class: AuditEventClass,
+    event_type_class: Type[BaseEventType],
+    audit_context: AuditContext,
+    transport: BaseAuditTransport,
+    error=None,
+):
+
+    audit_fluent_host = os.getenv("AUDIT_FLUENT_HOST", "localhost")
+    audit_fluent_port = int(os.getenv("AUDIT_FLUENT_PORT", 5170))
+
+    audit_message = make_audit_event(event_class, event_type_class, audit_context, error)
+
+    transport.send_sync(audit_message, host=audit_fluent_host, port=audit_fluent_port)

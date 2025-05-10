@@ -1,6 +1,6 @@
 from typing import Optional
 
-from pydantic import BaseModel, AwareDatetime, IPvAnyAddress
+from pydantic import BaseModel, AwareDatetime, IPvAnyAddress, Field
 
 from ss.audit.audit_types import (
     EventObject,
@@ -41,7 +41,7 @@ class AuditEvent(BaseModel):
     info_system_code: str
     info_system_id: str
     class_: AuditEventClass
-    additional_params: Optional[AdditionalParams]
-    scm_category: Optional[SCMCategory]
-    ip_nearby_node: Optional[str]
-    ip_recipient: Optional[str]
+    additional_params: Optional[AdditionalParams] = None
+    scm_category: Optional[SCMCategory] = None
+    ip_nearby_node: Optional[str] = None
+    ip_recipient: Optional[str] = None
