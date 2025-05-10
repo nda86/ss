@@ -39,8 +39,10 @@ container = Container()
 
 def inject(func=None):
     def decorator(inner_func):
+        is_coro = inspect.iscoroutinefunction(inner_func)
+
         @wraps(inner_func)
-        def wrapper(*args, **kwargs):
+        def sync_wrapper(*args, **kwargs):
             sig = inspect.signature(inner_func)
             for name, param in sig.parameters.items():
                 if name in kwargs:
@@ -48,7 +50,16 @@ def inject(func=None):
                 kwargs[name] = container.resolve(param)
             return inner_func(*args, **kwargs)
 
-        return wrapper
+        @wraps(inner_func)
+        async def async_wrapper(*args, **kwargs):
+            sig = inspect.signature(inner_func)
+            for name, param in sig.parameters.items():
+                if name in kwargs:
+                    continue
+                kwargs[name] = container.resolve(param)
+            return await inner_func(*args, **kwargs)
+
+        return async_wrapper if is_coro else sync_wrapper
 
     if func is not None:
         return decorator(func)

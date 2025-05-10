@@ -2,7 +2,7 @@ from typing import Optional
 
 from pydantic import BaseModel, AwareDatetime, IPvAnyAddress
 
-from ss.audit.types import (
+from ss.audit.audit_types import (
     EventObject,
     Initiator,
     NotEmptyStr,

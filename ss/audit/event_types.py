@@ -6,9 +6,20 @@ from typing import Any, Type, Optional
 
 from jinja2 import Template
 
-from conf.ss import AUDIT_SOURCE_NAME
-from core.utils.helpers import EnvDict
-from ss.audit.types import AuditEventClass
+# from conf.ss import AUDIT_SOURCE_NAME
+# from core.utils.helpers import EnvDict
+from ss.audit.audit_types import AuditEventClass
+
+
+AUDIT_SOURCE_NAME = "TEST_AUDIT"
+
+
+class EnvDict(dict):
+    def __getitem__(self, key):
+        return os.getenv(key)
+
+    def __setitem__(self, key, value):
+        raise NotImplementedError()
 
 
 class EventTypeRegistry:
@@ -21,6 +32,10 @@ class EventTypeRegistry:
     @classmethod
     def all(cls) -> list[Type[BaseEventType]]:
         return cls.__EVENTS
+
+    @classmethod
+    def all_json(cls) -> list[dict[str, Any]]:
+        return [event_type.audit_admin_message() for event_type in cls.__EVENTS]
 
 
 @dataclass
