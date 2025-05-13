@@ -5,6 +5,8 @@ from fastapi import FastAPI
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from filters.filter_engine import SqlAlchemyFilterEngine
+from filters.models import Shop
 from ss.audit.decorators import audit_event
 
 app = FastAPI()
@@ -29,6 +31,12 @@ async def hello_world():
 @audit_event("Логин")
 async def login():
     a = 2 / 0
+    return JSONResponse({"token": "<PASSWORD>"})
+
+
+@app.get("/list")
+async def list():
+    filter_engine = SqlAlchemyFilterEngine(Shop)
     return JSONResponse({"token": "<PASSWORD>"})
 
 
