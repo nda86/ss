@@ -1,78 +1,89 @@
-from api.v1.schemas import FilterPayload
-from core.models.voice import ApiVoice
-from core.repositories.alchemy.db import AsyncSessionLocal
-from core.repositories.alchemy.models import SqlCategory, SqlVoice
-from core.repositories.base_repository import BaseRepository
-from core.repositories.filters.filter_engine import SqlAlchemyFilterEngine
-from sqlalchemy import func, select
-from sqlalchemy.exc import SQLAlchemyError
+from typing import Any, Callable, Optional
+
+from api.v1.schemas import FilterPayload, FilterSource
+from core.repositories.filters.filter_config import (
+    MAPPING_ROLES_DATA,
+    SOURCE_FIELD_MAP,
+    unknown_role_filter,
+)
+from sqlalchemy import CTE, Select, and_, or_, select
+from sqlalchemy.orm import aliased
 
 
-class SqlAlchemyRepository(BaseRepository):
-    def __init__(self, db: AsyncSessionLocal):
-        self.db = db
-        self.voice_model = SqlVoice
+class SqlAlchemyFilterEngine:
+    def __init__(self, model, white_list: Optional[list[str]]):
+        self.model = model
+        self.white_list = white_list or []
+        self.operator_map: dict[str, Callable[[Any, Any], Any]] = {
+            "=": lambda col, val: col == val,
+            "!=": lambda col, val: col != val,
+            "<": lambda col, val: col < val,
+            ">": lambda col, val: col > val,
+            ">=": lambda col, val: col >= val,
+            "<=": lambda col, val: col <= val,
+            "in": lambda col, val: col.in_(val),
+            "not_in": lambda col, val: ~col.in_(val),
+            "is_null": lambda col, val: col.is_(None) if val else col.is_not(None),
+            "between": lambda col, val: col.between(val[0], val[1]),
+        }
 
-    async def get_all_categories(self) -> list[SqlCategory]:
-        stmt = select(SqlCategory)
-        result = await self.db.execute(stmt)
-        return result.scalars().all()
+    def _build_conditions(self, payload: FilterPayload):
+        and_clauses = list(filter(None, [self._build_clause(f) for f in payload.and_ if f.field in self.white_list]))
+        or_clauses = list(filter(None, [self._build_clause(f) for f in payload.or_ if f.field in self.white_list]))
+        result = []
+        if and_clauses:
+            result.append(and_(*and_clauses))
+        if or_clauses:
+            result.append(or_(*or_clauses))
+        return result
 
-    async def get_category_levels(self, ids: list[str]) -> dict:
-        match ids:
-            case [] | None:
-                stmt = select(SqlCategory.level_1_id.label("id"), SqlCategory.level_1_name.label("name")).distinct()
-            case [l1]:
-                stmt = (
-                    select(SqlCategory.level_2_id.label("id"), SqlCategory.level_2_name.label("name"))
-                    .where(SqlCategory.level_1_id == l1)
-                    .distinct()
-                )
-            case [l1, l2]:
-                stmt = (
-                    select(SqlCategory.level_3_id.label("id"), SqlCategory.level_3_name.label("name"))
-                    .where(
-                        SqlCategory.level_1_id == l1,
-                        SqlCategory.level_2_id == l2,
-                    )
-                    .distinct()
-                )
-            case [l1, l2, l3]:
-                stmt = (
-                    select(SqlCategory.level_4_id.label("id"), SqlCategory.level_4_name.label("name"))
-                    .where(
-                        SqlCategory.level_1_id == l1,
-                        SqlCategory.level_2_id == l2,
-                        SqlCategory.level_3_id == l3,
-                    )
-                    .distinct()
-                )
-            case _:
-                return {}
+    def _build_clause(self, f):
+        col = getattr(self.model, f.field)
+        op_func = self.operator_map.get(f.op)
+        return op_func(col, f.value) if col and op_func else None
 
-        result = await self.db.execute(stmt)
-        return result.mappings().all()
+    def _role_filter(self, user):
+        return MAPPING_ROLES_DATA.get(user.role, unknown_role_filter)(self.model, user)
 
-    async def save_voices(self, voices: list[SqlVoice]) -> bool:
-        try:
-            self.db.add_all(voices)
-            await self.db.commit()
-            return True
-        except SQLAlchemyError as e:
-            await self.db.rollback()
-            print(f"Error during bulk insert: {e}")
+    def _source_filter(self, source: FilterSource):
+        entry = SOURCE_FIELD_MAP.get(source)
+        if not entry:
             return False
+        field, values = entry
+        col = getattr(self.model, field)
+        return col.in_(values)
 
-    async def get_voices(
-        self, filter_payload: FilterPayload, user, limit: int, offset: int
-    ) -> tuple[list[ApiVoice], int]:
-        filter_engine = SqlAlchemyFilterEngine(model=self.voice_model, white_list=self.voice_model.FILTER_WHITE_LIST)
-        stmt = filter_engine.apply_distinct(filter_payload, user)
-        stmt = stmt.limit(limit).offset(offset)
-        result = await self.db.execute(stmt)
-        voices = result.scalars().all()
+    def build_cte_pipline(self, base_stmt: Select, payload: FilterPayload, user) -> CTE:
+        role_filter = self._role_filter(user)
+        source_filter = self._source_filter(payload.source)
+        voice_filters = self._build_conditions(payload)
 
-        count_stmt = select(func.count()).select_from(SqlVoice)
-        total_result = await self.db.execute(count_stmt)
-        total = total_result.scalar_one()
-        return voices, total
+        cte_role = base_stmt.where(role_filter).cte("cte_role")
+        cte_source = select(cte_role).where(source_filter).cte("cte_source")
+        cte_final = select(cte_source).where(*voice_filters).cte("cte_final")
+        return cte_final
+
+    def apply_distinct(
+        self, payload: FilterPayload, user, base_stmt: Select | None = None, use_sorting: bool = False
+    ) -> Select:
+        base_stmt = base_stmt or select(self.model)
+        cte = self.build_cte_pipline(base_stmt, payload, user)
+        cte_alias = aliased(self.model, cte)
+        top_1_subq = (
+            select(cte_alias)
+            .distinct(getattr(cte_alias, payload.distinct_by))
+            .order_by(
+                getattr(cte_alias, payload.distinct_by),
+                getattr(cte_alias, payload.distinct_by_order).desc(),  # TODO: вынести в фильтр
+            )
+            .subquery()
+        )
+
+        stmt = select(top_1_subq)
+        global_order_col = getattr(top_1_subq.c, payload.global_order_by, None)
+        if use_sorting and global_order_col:
+            stmt = stmt.order_by(
+                global_order_col.desc() if payload.global_order_direction == "desc" else global_order_col.asc()
+            )
+
+        return stmt
