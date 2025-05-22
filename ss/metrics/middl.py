@@ -1,7 +1,7 @@
 import time
 from typing import Callable
 
-from flask import request, Response
+from flask import request, Response, 
 from prometheus_client import Counter, Histogram, Gauge, generate_latest
 
 # Define Prometheus metrics
@@ -65,8 +65,8 @@ class MetricsMiddleware:
                 start_time = time.perf_counter()
                 REQUESTS.labels(request.method, label).inc()
 
-                request._start_time = start_time
-                request._label = label
+                g.start_time = start_time
+                g.label = label
 
         @self.app.after_request
         def record_metrics(response):
@@ -79,7 +79,7 @@ class MetricsMiddleware:
 
             return response
 
-        @app.teardown_request
+        @self.app.teardown_request
         def teardown_request(exc):
             REQUESTS_IN_PROGRESS.labels(request.method).dec()
             if exc is not None:
