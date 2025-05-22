@@ -1,3 +1,5 @@
+import asyncio
+
 from api.v1.schemas import FilterPayload
 from core.models.voice import ApiVoice
 from core.repositories.alchemy.db import AsyncSessionLocal
@@ -12,43 +14,39 @@ class SqlAlchemyRepository(BaseRepository):
     def __init__(self, db: AsyncSessionLocal):
         self.db = db
         self.voice_model = SqlVoice
+        self.category_model = SqlCategory
+        self.base_category_stmt = select(SqlCategory)
+        if hasattr(self.category_model, "is_active"):
+            self.base_category_stmt = self.base_category_stmt.where(self.category_model.is_active == True)
 
     async def get_all_categories(self) -> list[SqlCategory]:
-        stmt = select(SqlCategory)
-        result = await self.db.execute(stmt)
+        result = await self.db.execute(self.base_category_stmt)
         return result.scalars().all()
 
-    async def get_category_levels(self, ids: list[str]) -> dict:
-        match ids:
-            case [] | None:
-                stmt = select(SqlCategory.level_1_id.label("id"), SqlCategory.level_1_name.label("name")).distinct()
-            case [l1]:
-                stmt = (
-                    select(SqlCategory.level_2_id.label("id"), SqlCategory.level_2_name.label("name"))
-                    .where(SqlCategory.level_1_id == l1)
-                    .distinct()
-                )
-            case [l1, l2]:
-                stmt = (
-                    select(SqlCategory.level_3_id.label("id"), SqlCategory.level_3_name.label("name"))
-                    .where(
-                        SqlCategory.level_1_id == l1,
-                        SqlCategory.level_2_id == l2,
-                    )
-                    .distinct()
-                )
-            case [l1, l2, l3]:
-                stmt = (
-                    select(SqlCategory.level_4_id.label("id"), SqlCategory.level_4_name.label("name"))
-                    .where(
-                        SqlCategory.level_1_id == l1,
-                        SqlCategory.level_2_id == l2,
-                        SqlCategory.level_3_id == l3,
-                    )
-                    .distinct()
-                )
-            case _:
-                return {}
+    async def get_category_by_id(self, _id: str) -> SqlCategory | None:
+        stmt = self.base_category_stmt.where(self.category_model.id == _id)
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_category_levels(self, ids: list[str]) -> list[dict]:
+        level_fields = [
+            (SqlCategory.level_1_id, SqlCategory.level_1_name),
+            (SqlCategory.level_2_id, SqlCategory.level_2_name),
+            (SqlCategory.level_3_id, SqlCategory.level_3_name),
+            (SqlCategory.level_4_id, SqlCategory.level_4_name),
+        ]
+
+        if ids is None or len(ids) > len(level_fields):
+            return []
+
+        level = len(ids)
+        id_field, name_field = level_fields[level]
+        stmt = self.base_category_stmt.with_only_columns(id_field.label("id"), name_field.label("name")).distinct(
+            id_field
+        )
+
+        for i, id_value in enumerate(ids):
+            stmt = stmt.where(level_fields[i][0] == id_value)
 
         result = await self.db.execute(stmt)
         return result.mappings().all()
@@ -67,12 +65,14 @@ class SqlAlchemyRepository(BaseRepository):
         self, filter_payload: FilterPayload, user, limit: int, offset: int
     ) -> tuple[list[ApiVoice], int]:
         filter_engine = SqlAlchemyFilterEngine(model=self.voice_model, white_list=self.voice_model.FILTER_WHITE_LIST)
-        stmt = filter_engine.apply_distinct(filter_payload, user)
-        stmt = stmt.limit(limit).offset(offset)
-        result = await self.db.execute(stmt)
-        voices = result.scalars().all()
-
-        count_stmt = select(func.count()).select_from(SqlVoice)
-        total_result = await self.db.execute(count_stmt)
+        stmt_voice = filter_engine.apply(filter_payload, user)
+        stmt_voice = stmt_voice.limit(limit).offset(offset)
+        stmt_voice_cnt = select(func.count()).select_from(filter_engine.apply(filter_payload, user))
+        voice_result, total_result = await asyncio.gather(
+            self.db.execute(stmt_voice),
+            self.db.execute(stmt_voice_cnt),
+        )
+        voices = voice_result.scalars().all()
         total = total_result.scalar_one()
+
         return voices, total

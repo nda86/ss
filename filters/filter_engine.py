@@ -1,3 +1,4 @@
+from datetime import datetime, timezone, timedelta
 from typing import Any, Callable, Optional
 
 from api.v1.schemas import FilterPayload, FilterSource
@@ -6,8 +7,7 @@ from core.repositories.filters.filter_config import (
     SOURCE_FIELD_MAP,
     unknown_role_filter,
 )
-from sqlalchemy import CTE, Select, and_, or_, select
-from sqlalchemy.orm import aliased
+from sqlalchemy import Select, and_, or_, select
 
 
 class SqlAlchemyFilterEngine:
@@ -27,7 +27,7 @@ class SqlAlchemyFilterEngine:
             "between": lambda col, val: col.between(val[0], val[1]),
         }
 
-    def _build_conditions(self, payload: FilterPayload):
+    def _voice_filter(self, payload: FilterPayload):
         and_clauses = list(filter(None, [self._build_clause(f) for f in payload.and_ if f.field in self.white_list]))
         or_clauses = list(filter(None, [self._build_clause(f) for f in payload.or_ if f.field in self.white_list]))
         result = []
@@ -53,34 +53,49 @@ class SqlAlchemyFilterEngine:
         col = getattr(self.model, field)
         return col.in_(values)
 
-    def build_cte_pipline(self, base_stmt: Select, payload: FilterPayload, user) -> CTE:
+    def _top_filter(self):
+        return self.model.is_top.is_(True)
+
+    def _deep_search(self):
+        deep_date = datetime.now(timezone.utc) - timedelta(days=30)
+        return self.model.created_at >= deep_date
+
+    def build_stmt(self, base_stmt: Select, payload: FilterPayload, user, use_cte) -> Select:
         role_filter = self._role_filter(user)
         source_filter = self._source_filter(payload.source)
-        voice_filters = self._build_conditions(payload)
+        voice_filters = self._voice_filter(payload)
+        top_filter = self._top_filter()
+        deep_search = self._deep_search()
 
-        cte_role = base_stmt.where(role_filter).cte("cte_role")
-        cte_source = select(cte_role).where(source_filter).cte("cte_source")
-        cte_final = select(cte_source).where(*voice_filters).cte("cte_final")
-        return cte_final
+        if use_cte:
+            cte = base_stmt.cte("initial")
+            filters = {
+                "deep_search": deep_search,
+                "role_filter": role_filter,
+                "source_filter": source_filter,
+                "top_filter": top_filter,
+                "voice_filters": and_(*voice_filters) if voice_filters else None,
+            }
+            for name, conditions in filters:
+                if conditions is not None:
+                    cte = select(cte).where(conditions).cte(name).prefix_with("NOT MATERIALIZED")
+            stmt = select(cte)
+        else:
+            stmt = base_stmt.where(role_filter, source_filter, *voice_filters, top_filter, deep_search)
 
-    def apply_distinct(
-        self, payload: FilterPayload, user, base_stmt: Select | None = None, use_sorting: bool = False
+        return stmt
+
+    def apply(
+        self,
+        payload: FilterPayload,
+        user,
+        base_stmt: Select | None = None,
+        use_sorting: bool = False,
+        use_cte: bool = True,
     ) -> Select:
         base_stmt = base_stmt or select(self.model)
-        cte = self.build_cte_pipline(base_stmt, payload, user)
-        cte_alias = aliased(self.model, cte)
-        top_1_subq = (
-            select(cte_alias)
-            .distinct(getattr(cte_alias, payload.distinct_by))
-            .order_by(
-                getattr(cte_alias, payload.distinct_by),
-                getattr(cte_alias, payload.distinct_by_order).desc(),  # TODO: вынести в фильтр
-            )
-            .subquery()
-        )
-
-        stmt = select(top_1_subq)
-        global_order_col = getattr(top_1_subq.c, payload.global_order_by, None)
+        stmt = self.build_stmt(base_stmt, payload, user, use_cte)
+        global_order_col = getattr(stmt, payload.global_order_by, None)
         if use_sorting and global_order_col:
             stmt = stmt.order_by(
                 global_order_col.desc() if payload.global_order_direction == "desc" else global_order_col.asc()
