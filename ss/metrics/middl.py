@@ -1,7 +1,7 @@
 import time
 from typing import Callable
 
-from flask import request, Response, 
+from flask import request, Response
 from prometheus_client import Counter, Histogram, Gauge, generate_latest
 
 # Define Prometheus metrics
@@ -30,8 +30,6 @@ REQUESTS_IN_PROGRESS = Gauge(
     "Number of HTTP requests in progress",
     ["method"],
 )
-
-
 
 
 ENDPOINT_MATCHER: list[tuple[Callable[[str], bool], str]] = [
